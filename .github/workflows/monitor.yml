@@ -1,0 +1,70 @@
+name: Monitor do CRM
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL a testar (deixe vazio para o CRM)'
+        required: false
+        default: ''
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  checar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Testar se o CRM responde
+        id: teste
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          if [ -z "$URL" ]; then URL="https://crm.larissanavescrm.com.br/"; fi
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 25 "$URL" || true)
+          if [ -z "$CODE" ]; then CODE=000; fi
+          echo "Resposta HTTP: $CODE"
+          case "$CODE" in
+            200|301|302|307|401|403) echo "CRM NO AR";;
+            *) echo "CRM FORA DO AR"; exit 1;;
+          esac
+
+      - name: Abrir alerta no GitHub (chega no seu e-mail)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const h = new Date().toISOString();
+            const abertos = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'alerta-crm'
+            });
+            if (abertos.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: 'ALERTA: o CRM está fora do ar',
+                labels: ['alerta-crm'],
+                body: 'O CRM nao respondeu na verificacao automatica das ' + h +
+                      '.\n\nSe o servidor estiver desligado, ele precisa ser ligado fisicamente.' +
+                      '\n\n/cc @advlarissanaves-ctrl'
+              });
+            }
+
+      - name: Fechar o alerta quando o CRM voltar
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const abertos = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'alerta-crm'
+            });
+            for (const i of abertos.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: i.number, state: 'closed'
+              });
+            }
